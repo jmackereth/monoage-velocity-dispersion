@@ -5,21 +5,20 @@ lowess= sm.nonparametric.lowess
 import esutil
 from galpy.util import bovy_coords, bovy_plot
 import apogee.tools.read as apread
-import isodist
 import numpy as np
 import matplotlib.pyplot as plt
 import os
 import pickle
 #import fitDens 
 import apogee.tools.read as apread
-import gaia_tools
 import gaia_tools.load as gload
+from gaia_tools import xmatch
 from apogee.select import apogeeSelect
 from astropy.io import fits
 from astropy.table import Table, join
 from numpy.lib.recfunctions import merge_arrays
 from scipy.interpolate import interp1d
-from scipy.stats import multivariate_normal
+from scipy.stats import multivariate_normal, norm
 from tqdm import tqdm
 _R0= 8. # kpc
 _Z0= 0.025 # kpc
@@ -29,15 +28,21 @@ _AFELABEL= r'$[\left([\mathrm{O+Mg+Si+S+Ca}]/5\right)/\mathrm{Fe}]$'
 #catpath = '/Users/Ted/Documents/Work/apogee/catalogues/'
 catpath = '/data5/astjmack/apogee/catalogues/'
 selectFile= 'savs/selfunc-nospdata.sav'
+agecat = '../sav/ages_dr14.txt'
+corr_agecat = '../sav/corrected_ages_dr14.npy'
 if os.path.exists(selectFile):
     with open(selectFile,'rb') as savefile:
         apo= pickle.load(savefile)
 
-savfile = open('/gal/astjmack/apogee/apogee-maps/py/paramsRGB_brokenexpflare_01dex2gyrbins_monoabundance_massgrid.dat', 'rb')
-obj = pickle.load(savfile)
-afebins, lfehbins, numbins, paramt, samples, massgrid, m_samplegrid = obj
 
-def get_rgbtgassample(cuts = True, errorsamples=100, add_dist=False, distkey='BPG_meandist', disterrkey='BPG_diststd'):
+def get_rgbtgassample(cuts = True, 
+                      add_dist=False, 
+                      add_ages=False,
+                      rm_bad_dist=True,
+                      notgas = False,
+                      alternate_ages = True,
+                      distkey='BPG_meandist', 
+                      disterrkey='BPG_diststd'):
     """
     Get a clean sample of dr13 APOGEE data with TGAS parallaxes and PMs
     ---
@@ -59,33 +64,148 @@ def get_rgbtgassample(cuts = True, errorsamples=100, add_dist=False, distkey='BP
     else:
         allStar = apread.allStar()
     dists = fits.open('/gal/astjmack/apogee/catalogues/apogee_distances-DR14.fits')[1].data
-    tgas_dat = gaia_tools.load.tgas()
-    m1,m2,sep= gaia_tools.xmatch.xmatch(allStar,tgas_dat,colRA1='RA',colDec1='DEC', colRA2='ra', colDec2='dec', epoch1 =2000, epoch2=2015)
-    dat = merge_arrays([allStar[m1], tgas_dat[m2]], asrecarray=True, flatten=True)
-    dat = esutil.numpy_util.add_fields(dat, [('AVG_ALPHAFE', float),('MAPs_dist', float), ('MAPs_dist_err', float), ('err_samples', float, (errorsamples,7))])
-    err_samp = [sample_error_ellipse(dat[i], size=errorsamples) for i in tqdm(range(len(dat)))]
-    vhelio_samp = [sample_vrad_gauss(dat[i], size=errorsamples) for i in tqdm(range(len(dat)))]
-    dat['err_samples'][:,:,6] = vhelio_samp
-    dat['err_samples'][:,:,:5] = err_samp
-    dat['AVG_ALPHAFE'] = avg_alphafe_dr13(dat)
-    distarr = np.array([bayes_parallax_invert(dat[i], ageisafe=True, nsamp=errorsamples) for i in tqdm(range(len(dat)))])
-    #dat['err_samples'][:,:,5] = distarr
-    dat['MAPs_dist'], lo, hi = distarr[:,0], distarr[:,1], distarr[:,2]
-    errors = np.dstack([dat['MAPs_dist']-lo, hi-dat['MAPs_dist']])
-    dat['MAPs_dist_err'] = np.mean(errors, axis=2)
+    if not notgas:
+        tgas_dat = gload.tgas()
+        m1,m2,sep= xmatch.xmatch(allStar,tgas_dat,
+                                            colRA1='RA',
+                                            colDec1='DEC', 
+                                            colRA2='ra', 
+                                            colDec2='dec', 
+                                            epoch1 =2000, 
+                                            epoch2=2015, swap=True)
+        dat = merge_arrays([allStar[m1], tgas_dat[m2]], asrecarray=True, flatten=True)
+    else:
+        dat = allStar
+    dat = esutil.numpy_util.add_fields(dat, [('AVG_ALPHAFE', float)])
+    dat['AVG_ALPHAFE'] = avg_alphafe(dat)
     if add_dist:
         allStar_tab = Table(data=dat)
         dists_tab = Table(data=dists)
         #join table
-        tab = join(allStar_tab, dists_tab, keys='APOGEE_ID', uniq_col_name='{col_name}{table_name}', table_names=['','2'])
+        tab = join(allStar_tab, dists_tab, 
+                   keys='APOGEE_ID', 
+                   uniq_col_name='{col_name}{table_name}', 
+                   table_names=['','_dist_table'])
         dat = tab.as_array()
-    dist_samp = [sample_dist_gauss(dat[i], size=errorsamples, distkey=distkey, disterrkey=disterrkey) for i in tqdm(range(len(dat)))]
-    dat['err_samples'][:,:,5] = dist_samp
+        if rm_bad_dist:
+            mask = np.isfinite(dat[distkey])
+            dat=dat[mask]
+    if add_ages:
+        allStar_tab = Table(data=dat)
+        if alternate_ages:
+            ages = np.load(corr_agecat)
+            ages_tab = Table(data=ages)
+        else:
+            ages = np.genfromtxt(agecat, names=True, dtype=None)
+            ages_tab = Table(data=ages)
+            ages_tab.rename_column('2MASS_ID', 'APOGEE_ID')
+        tab = join(allStar_tab, ages_tab, 
+                   keys='APOGEE_ID', 
+                   uniq_col_name='{col_name}{table_name}', 
+                   table_names=['','_marie_ages'])
+        dat = tab.as_array()
     return dat
 
+def dat_to_rectgal(dat, 
+                  return_cov=True,
+                  return_rphiz =True,
+                  keys = ['ra', 'dec', 'BPG_meandist', 'pmra', 'pmdec', 'VHELIO_AVG'],
+                  cov_keys = ['pmra_error','pmdec_error','pmra_pmdec_corr','BPG_diststd','VERR']):
+    vxvv = np.dstack([dat[keys[i]] for i in range(len(keys))])[0]
+    ro, vo, zo = 8., 220., 0.025
+    ra, dec= vxvv[:,0], vxvv[:,1]
+    lb= bovy_coords.radec_to_lb(ra,dec,degree=True)
+    pmra, pmdec= vxvv[:,3], vxvv[:,4]
+    pmllpmbb= bovy_coords.pmrapmdec_to_pmllpmbb(pmra,pmdec,ra,dec,degree=True)
+    d, vlos= vxvv[:,2], vxvv[:,5]
+    rectgal= bovy_coords.sphergal_to_rectgal(lb[:,0],lb[:,1],d,vlos,pmllpmbb[:,0], pmllpmbb[:,1],degree=True)
+    vsolar= np.array([-10.1,4.0,6.7])
+    vsun= np.array([0.,1.,0.,])+vsolar/vo
+    X = rectgal[:,0]/ro
+    Y = rectgal[:,1]/ro
+    Z = rectgal[:,2]/ro
+    vx = rectgal[:,3]/vo
+    vy = rectgal[:,4]/vo
+    vz = rectgal[:,5]/vo
+    XYZ = np.dstack([X, Y, Z])[0]
+    vxyz = np.dstack([vx,vy,vz])[0]
+    if return_cov == True:
+        cov_pmradec = np.array([[[dat[cov_keys[0]][i]**2, 
+                                  dat[cov_keys[2]][i]*dat[cov_keys[0]][i]*dat[cov_keys[1]][i]],
+                                 [dat[cov_keys[2]][i]*dat[cov_keys[0]][i]*dat[cov_keys[1]][i], 
+                                  dat[cov_keys[1]][i]**2]] for i in range(len(dat))])
+        cov_pmllbb =  bovy_coords.cov_pmrapmdec_to_pmllpmbb(cov_pmradec, vxvv[:,0], vxvv[:,1],
+                                                            degree=True,
+                                                            epoch='J2015')
+        cov_vxyz = bovy_coords.cov_dvrpmllbb_to_vxyz(vxvv[:,2], 
+                                                     dat[cov_keys[3]], 
+                                                     dat[cov_keys[4]], 
+                                                     pmllpmbb[:,0], 
+                                                     pmllpmbb[:,1], 
+                                                     cov_pmllbb, 
+                                                     lb[:,0], 
+                                                     lb[:,1])
+        return XYZ, vxyz, cov_vxyz
+    return XYZ, vxyz
+
+def sample_pos_vel(dat, cov_vxyz,
+                   nsamp = 100,
+                   keys = ['ra', 'dec', 'BPG_meandist', 'pmra', 'pmdec', 'VHELIO_AVG'],
+                   cov_keys = ['pmra_error','pmdec_error','pmra_pmdec_corr','BPG_diststd','VERR']):
+
+    ro, vo, zo = 8., 220., 0.025
+    vxvv = np.dstack([dat[keys[i]] for i in range(len(keys))])[0]
+    ra, dec= vxvv[:,0], vxvv[:,1]
+    lb= bovy_coords.radec_to_lb(ra,dec,degree=True)
+    vsolar= np.array([-10.1,4.0,6.7])
+    vsun= np.array([0.,1.,0.,])+vsolar/vo
+    pmra, pmdec= vxvv[:,3], vxvv[:,4]
+    pmllpmbb= bovy_coords.pmrapmdec_to_pmllpmbb(pmra,pmdec,ra,dec,degree=True)
+    d, vlos= vxvv[:,2], vxvv[:,5]
+    rectgal= bovy_coords.sphergal_to_rectgal(lb[:,0],lb[:,1],d,vlos,pmllpmbb[:,0], pmllpmbb[:,1],degree=True)
+    X = rectgal[:,0]/ro
+    Y = rectgal[:,1]/ro
+    Z = rectgal[:,2]/ro
+    vx = rectgal[:,3]/vo
+    vy = rectgal[:,4]/vo
+    vz = rectgal[:,5]/vo
+    dataRphiz = np.empty([len(dat),nsamp, 3])
+    datavxyz = np.empty([len(dat),nsamp, 3])
+    datavRvTvz = np.empty([len(dat),nsamp, 3])
+    for i in tqdm(range(len(dat))):
+        if not np.isfinite(cov_vxyz[i]).all():
+            dataRphiZ[i] = np.ones([nsamp,3])*np.nan
+            datavxyz[i] = np.ones([nsamp,3])*np.nan
+            datavRphiZ[i] = np.ones([nsamp,3])*np.nan
+            continue
+        d = norm(loc=vxvv[:,2][i], scale=dat['BPG_diststd'][i])
+        ds = d.rvs(nsamp)
+        ls = np.ones(nsamp)*lb[:,0][i]
+        bs = np.ones(nsamp)*lb[:,1][i]
+        txyz = bovy_coords.lbd_to_XYZ(ls,bs,ds, degree=True)
+        t_X = txyz[:,0]/ro
+        t_Y = txyz[:,1]/ro
+        t_Z = txyz[:,2]/ro
+        rpz = bovy_coords.XYZ_to_galcencyl(t_X,t_Y,t_Z,Zsun=zo/ro)
+        dataRphiz[i] = rpz
+        t = multivariate_normal(mean=[vx[i], vy[i], vz[i]], cov = cov_vxyz[i]/220.)
+        ts = t.rvs(nsamp)
+        datavxyz[i] = ts
+        ndat = np.ones(nsamp)
+        t_vx = ts[:,0]
+        t_vy = ts[:,1]
+        t_vz = ts[:,2]
+        vsun= np.array([0.,1.,0.,])+vsolar/vo
+        datavRvTvz[i] = bovy_coords.vxvyvz_to_galcencyl(t_vx,t_vy,t_vz,rpz[:,0],rpz[:,1],rpz[:,2],
+                                                        vsun=vsun,
+                                                        Xsun=1.,
+                                                        Zsun=zo/ro,
+                                                        galcen=True)
+    return dataRphiz, datavRvTvz
 
 
-def avg_alphafe_dr13(data):    
+
+def avg_alphafe(data):    
     weight_o= np.ones(len(data))
     weight_s= np.ones(len(data))
     weight_si= np.ones(len(data))
@@ -103,10 +223,8 @@ def avg_alphafe_dr13(data):
                                       +weight_mg)
 
 
-
-
 def alphaedge(fehs):
-    if fehs.dtype == np.float32:
+    if not hasattr(fehs, '__iter__'):
         if fehs < 0:
             return (0.12/-0.6)*fehs+0.03
         elif fehs >= 0:
@@ -116,102 +234,3 @@ def alphaedge(fehs):
     edge[fehs >= 0] = 0.03
     return edge
 
-def gauss(x, mu, sig):
-    return np.exp(-1*((x-mu)**2.)/(2.*sig**2))
-
-def density_model(age,feh,alpha='High', denstype='brokenexpflare', ageisafe=False ):
-    if ageisafe:
-        agebins = np.array(afebins)
-    elif not ageisafe:
-    	agebins = np.array(lagebins)
-    fehbins = np.array(lfehbins)
-    cagebins = (agebins[:-1]+agebins[1:])/2.
-    cfehbins = (fehbins[:-1]+fehbins[1:])/2.
-    i = np.argmin(np.fabs(cagebins-age))
-    j = np.argmin(np.fabs(cfehbins-feh))
-    if ageisafe == True:
-        samp = samples
-    else:
-        if alpha== 'High':
-            samp = hsamples
-        elif alpha== 'Low':
-            samp = lsamples
-    params = np.median(samp[j,i], axis=1)
-    tdensfunc = fitDens._setup_densfunc(denstype)
-    densfunc = lambda x,y,z: tdensfunc(x,y,z,params=params)
-    return densfunc
-                                          
-def bayes_parallax_invert(dat, ageisafe=False, forsampling=False, nsamp = 1000 ):
-	point = dat
-	if point['AVG_ALPHAFE'] > alphaedge(point['FE_H']):
-		afe = 'High'
-	else:
-		afe = 'Low'
-	if ageisafe:
-		dmodel = density_model(point['AVG_ALPHAFE'], point['FE_H'], ageisafe=True)
-	else:
-		dmodel = density_model(point['Age'], point['FE_H'], alpha=afe)
-	pis = np.linspace(0.00001,10.,1000)
-	dists = 1./pis
-	l = np.ones(len(dists))*point['l']
-	b = np.ones(len(dists))*point['b']
-	xyz = bovy_coords.lbd_to_XYZ(l, b, dists)
-	rphiz = bovy_coords.XYZ_to_galcencyl(xyz[:,0], xyz[:,1], xyz[:,2], Xsun=8., Zsun=0.025)
-	los_density = dmodel(rphiz[:,0], rphiz[:,1], rphiz[:,2])
-	p = point['parallax']
-	p_err = point['parallax_error']
-	pdf = los_density*gauss(pis, p, p_err)
-	interp = interp1d(np.cumsum(pdf)/np.sum(pdf),pis)
-	sample = interp(np.random.rand(nsamp))
-	p_mean, p_sig = np.mean(sample), np.std(sample)
-	p_low = p_mean-p_sig
-	p_hi = p_mean+p_sig
-	return sample 
-	
-def cov_mat(data):
-	ra_err_rad = data['ra_error']*(np.pi/(180.*3600.*1000.))
-	dec_err_rad = data['dec_error']*(np.pi/(180.*3600.*1000.))
-	A = ra_err_rad *           np.array([ra_err_rad,                          data['ra_dec_corr']*dec_err_rad,       data['ra_pmra_corr']*data['pmra_error'],       data['ra_pmdec_corr']*data['pmdec_error'],       data['ra_parallax_corr']*data['parallax_error']])
-	B = dec_err_rad *          np.array([data['ra_dec_corr']*ra_err_rad,      dec_err_rad,                           data['dec_pmra_corr']*data['pmra_error'],      data['dec_pmdec_corr']*data['pmdec_error'],      data['dec_parallax_corr']*data['parallax_error']])
-	C = data['pmra_error']*    np.array([data['ra_pmra_corr']*ra_err_rad,     data['dec_pmra_corr']*dec_err_rad,     data['pmra_error'],                            data['pmra_pmdec_corr']*data['pmdec_error'],     data['parallax_pmra_corr']*data['parallax_error']])
-	D = data['pmdec_error']*   np.array([data['ra_pmdec_corr']*ra_err_rad,    data['dec_pmdec_corr']*dec_err_rad,    data['pmra_pmdec_corr']*data['pmra_error'],    data['pmdec_error'],                             data['parallax_pmdec_corr']*data['parallax_error']])
-	E = data['parallax_error']*np.array([data['ra_parallax_corr']*ra_err_rad, data['dec_parallax_corr']*dec_err_rad, data['parallax_pmra_corr']*data['pmra_error'], data['parallax_pmdec_corr']*data['pmdec_error'], data['parallax_error']])
-	cov =np.matrix([A,
-					B,
-					C,
-					D,
-					E])
-	cov[0,1] = cov[1,0]
-	cov[0,2] = cov[2,0]
-	cov[0,3] = cov[3,0]
-	cov[0,4] = cov[4,0]
-	
-	cov[1,2] = cov[2,1]
-	cov[1,3] = cov[3,1]
-	cov[1,4] = cov[4,1]
-	
-	cov[2,3] = cov[3,2]
-	cov[2,4] = cov[4,2]
-	
-	cov[3,4] = cov[4,3]	
-	return cov
-    
-
-def sample_error_ellipse(data, size=1000):
-    c = cov_mat(data)
-    means = np.array([data['ra']*(np.pi/180.), data['dec']*(np.pi/180.), data['pmra'], data['pmdec'], data['parallax']])
-    multivar = multivariate_normal(mean=means, cov=np.array(c), allow_singular=True)
-    rvs = multivar.rvs(size)
-    return rvs  
-    	
-def sample_vrad_gauss(data, size=1000):
-	pdf = gauss(np.linspace(-400,400,10000), data['VHELIO_AVG'], data['VERR'])
-	interp = interp1d(np.cumsum(pdf)/np.sum(pdf),np.linspace(-400,400,10000))
-	sample = interp(np.random.rand(size))
-	return sample
-
-def sample_dist_gauss(data, size=1000, distkey='BPG_meandist', disterrkey='BPG_diststd'):
-	pdf = gauss(np.linspace(-400,400,10000), data[distkey], data[disterrkey])
-	interp = interp1d(np.cumsum(pdf)/np.sum(pdf),np.linspace(-400,400,10000))
-	sample = interp(np.random.rand(size))
-	return sample
