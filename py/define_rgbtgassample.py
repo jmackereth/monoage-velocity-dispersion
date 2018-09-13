@@ -29,7 +29,7 @@ _AFELABEL= r'$[\left([\mathrm{O+Mg+Si+S+Ca}]/5\right)/\mathrm{Fe}]$'
 catpath = '/data5/astjmack/apogee/catalogues/'
 selectFile= 'savs/selfunc-nospdata.sav'
 agecat = '../sav/ages_dr14.txt'
-corr_agecat = '../sav/corrected_ages_dr14.npy'
+corr_agecat = '../sav/astroNN_ages_APOKASCDR2.npy'
 if os.path.exists(selectFile):
     with open(selectFile,'rb') as savefile:
         apo= pickle.load(savefile)
@@ -40,7 +40,7 @@ def get_rgbtgassample(cuts = True,
                       add_ages=False,
                       rm_bad_dist=True,
                       notgas = False,
-                      alternate_ages = True,
+                      alternate_ages = False,
                       distkey='BPG_meandist', 
                       disterrkey='BPG_diststd'):
     """
@@ -95,6 +95,7 @@ def get_rgbtgassample(cuts = True,
         if alternate_ages:
             ages = np.load(corr_agecat)
             ages_tab = Table(data=ages)
+            ages_tab.rename_column('astroNN_Age', 'Age')
         else:
             ages = np.genfromtxt(agecat, names=True, dtype=None)
             ages_tab = Table(data=ages)
@@ -109,6 +110,7 @@ def get_rgbtgassample(cuts = True,
 def dat_to_rectgal(dat, 
                   return_cov=True,
                   return_rphiz =True,
+                  verbose =False,
                   keys = ['ra', 'dec', 'BPG_meandist', 'pmra', 'pmdec', 'VHELIO_AVG'],
                   cov_keys = ['pmra_error','pmdec_error','pmra_pmdec_corr','BPG_diststd','VERR']):
     vxvv = np.dstack([dat[keys[i]] for i in range(len(keys))])[0]
@@ -134,9 +136,13 @@ def dat_to_rectgal(dat,
                                   dat[cov_keys[2]][i]*dat[cov_keys[0]][i]*dat[cov_keys[1]][i]],
                                  [dat[cov_keys[2]][i]*dat[cov_keys[0]][i]*dat[cov_keys[1]][i], 
                                   dat[cov_keys[1]][i]**2]] for i in range(len(dat))])
+        if verbose:
+            print('propagating covariance in pmra pmdec -> pmll pmbb')
         cov_pmllbb =  bovy_coords.cov_pmrapmdec_to_pmllpmbb(cov_pmradec, vxvv[:,0], vxvv[:,1],
                                                             degree=True,
                                                             epoch='J2015')
+        if verbose:
+            print('propagating covariance in pmll pmbb -> vx vy vz')
         cov_vxyz = bovy_coords.cov_dvrpmllbb_to_vxyz(vxvv[:,2], 
                                                      dat[cov_keys[3]], 
                                                      dat[cov_keys[4]], 
@@ -223,14 +229,16 @@ def avg_alphafe(data):
                                       +weight_mg)
 
 
+
 def alphaedge(fehs):
     if not hasattr(fehs, '__iter__'):
-        if fehs < 0:
+        if fehs < 0.1:
             return (0.12/-0.6)*fehs+0.03
-        elif fehs >= 0:
+        elif fehs >= 0.1:
             return 0.03
     edge = np.zeros(len(fehs))
-    edge[fehs < 0] = (0.12/-0.6)*fehs[fehs < 0]+0.03
-    edge[fehs >= 0] = 0.03
+    edge[fehs < 0.2] = (0.12/-0.6)*fehs[fehs < 0.2]+0.05
+    edge[fehs >= 0.2] = (0.12/-0.6)*0.2+0.05
     return edge
+
 

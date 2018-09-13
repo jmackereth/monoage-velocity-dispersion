@@ -40,6 +40,37 @@ def fitDisp(R, z, v_R, v_z, cov_vRvTvz, med_z, mtype, init,
         return out, samples
     return out
 
+def fitDisp_qdf(vxvvsample, init,
+            mcmc=False,
+            nofit=False,
+            nit=300, 
+            nwalk=200, 
+            ncut=50, 
+            threads=16,
+            debug=False):
+    mtype='qdf'
+    if not nofit:
+        dispmodel = setup_dispmodel(mtype)
+        sys.stdout.write('inital parameters: '+str(init)+' \n')
+        out = fmin(lambda x: mloglike_qdf(x, vxvvsample, dispmodel, mtype, emcee=False), init, disp=True)
+        sys.stdout.write('maximum likelihood params: '+str(out)+' \n')
+        sys.stdout.flush()
+    if mcmc:
+        if nofit:
+            out = init
+        ndim = len(out)
+        pos = np.fabs([out+1e-4*np.random.randn(ndim) for i in range(nwalk)])
+        sampler = emcee.EnsembleSampler(nwalk, ndim, loglike_qdf, 
+                                    args=(vxvvsample, dispmodel, mtype), 
+                                    threads=threads)
+        for i, result in tqdm(enumerate(sampler.sample(pos, iterations=nit))):
+            continue
+        sampler.pool.terminate()
+        sampler.pool.join()
+        samples = sampler.chain[:,ncut:,:].reshape((-1,ndim))
+        return out, samples
+    return out
+
 def loglike(params, dataR, dataZ, datav_R, datav_z, datacov_vRvTvz, datamed_z, dispmodel, mtype, emcee=True):
     if not check_prior(params, mtype, datamed_z):
         if emcee:
@@ -53,25 +84,48 @@ def loglike(params, dataR, dataZ, datav_R, datav_z, datacov_vRvTvz, datamed_z, d
         return -np.finfo(np.dtype(np.float64)).max
     return lp
 
+def loglike_qdf(params, vxvvsample, dispmodel, mtype, emcee=True):
+    if not check_prior(params, mtype, None):
+        if emcee:
+            return -np.inf
+        return -np.finfo(np.dtype(np.float64)).max
+    mod = lambda samp: dispmodel(samp, params=params)
+    lp = mod(vxvvsample)
+    if not np.isfinite(lp):
+        if emcee:
+            return -np.inf
+        return -np.finfo(np.dtype(np.float64)).max
+    return lp
+
 def mloglike(*args,**kwargs):
     return -loglike(*args,**kwargs)
 
+def mloglike_qdf(*args,**kwargs):
+    return -loglike_qdf(*args,**kwargs)
 
 def setup_dispmodel(model):
     if model.lower() == 'gaussian1d':
         return dispmodels.gaussian_1d
-    if model.lower() == 'gaussian':
+    elif model.lower() == 'gaussian':
         return dispmodels.gaussian_fixedv0
-    if model.lower() == 'gaussianexprquadz':
+    elif model.lower() == 'gaussianexprquadz':
         return dispmodels.gaussian_expR_quadz_fixedv0
-    if model.lower() == 'gaussianexprquadzvaryvo':
+    elif model.lower() == 'gaussianexprquadzvaryvo':
         return dispmodels.gaussian_expR_quadz
-    if model.lower() == 'gaussianexprexpz':
+    elif model.lower() == 'gaussianexprexpz':
         return dispmodels.gaussian_expR_expz_fixedv0
-    if model.lower() == 'gaussianexprexpzvaryvo':
+    elif model.lower() == 'gaussianexprexpzvaryvo':
         return dispmodels.gaussian_expR_expz
-    if model.lower() == 'ellipsoid':
+    elif model.lower() == 'ellipsoid':
         return dispmodels.ellipsoid
+    elif model.lower() == 'ellipsoidvaryvo':
+        return dispmodels.ellipsoid_varying_v0
+    elif model.lower() == 'ellipsoidvo_fr':
+        return dispmodels.ellipsoid_v0_R
+    elif model.lower() == 'qdf':
+        return dispmodels.quasiisothermal
+    else:
+        raise NameError('Bad model type string!')
     
 
 def check_prior(params, model, med_z):
@@ -144,6 +198,55 @@ def check_prior(params, model, med_z):
         if params[9] < -10: return False
         if params[10] > 1.:return False
         if params[10] < 0.:return False
+        return True
+    if model.lower() == 'ellipsoidvaryvo':
+        sigmaR_z0 = (params[2]*(-med_z)**2+params[3]*(-med_z)+10**params[1])
+        sigmaz_z0 = (params[6]*(-med_z)**2+params[7]*(-med_z)+10**params[5])
+        if sigmaR_z0 > 200.:return False
+        if sigmaR_z0 < 1.:return False
+        if sigmaz_z0 > 200.:return False
+        if sigmaz_z0 < 1.:return False
+        if 10**params[1] > 200.: return False
+        if 10**params[1] < 1.: return False
+        if 10**params[5] > 200.: return False
+        if 10**params[5] < 1.: return False 
+        if params[8] > 10: return False
+        if params[8] < -10: return False
+        if params[9] > 10: return False
+        if params[9] < -10: return False
+        if params[10] > 100: return False
+        if params[10] < -100: return False
+        if params[11] > 100: return False
+        if params[11] < -100: return False
+        if params[12] > 1.:return False
+        if params[12] < 0.:return False
+        return True
+    if model.lower() == 'ellipsoidvo_fr':
+        sigmaR_z0 = (params[2]*(-med_z)**2+params[3]*(-med_z)+10**params[1])
+        sigmaz_z0 = (params[6]*(-med_z)**2+params[7]*(-med_z)+10**params[5])
+        if sigmaR_z0 > 200.:return False
+        if sigmaR_z0 < 1.:return False
+        if sigmaz_z0 > 200.:return False
+        if sigmaz_z0 < 1.:return False
+        if 10**params[1] > 200.: return False
+        if 10**params[1] < 1.: return False
+        if 10**params[5] > 200.: return False
+        if 10**params[5] < 1.: return False 
+        if params[8] > 10: return False
+        if params[8] < -10: return False
+        if params[9] > 10: return False
+        if params[9] < -10: return False
+        if params[11] > 100: return False
+        if params[11] < -100: return False
+        if params[13] > 100: return False
+        if params[13] < -100: return False
+        if params[14] > 1.:return False
+        if params[14] < 0.:return False
+        return True
+    if model.lower() == 'qdf':
+        if params[0] < 0.: return False
+        if params[1] < 0.: return False
+        if params[2] < 0.: return False
         return True
 
 def lnprior(theta, med_z):

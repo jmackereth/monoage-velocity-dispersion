@@ -1,4 +1,4 @@
-import define_rgbtgassample
+import define_rgbsample
 import dispmodels
 import fitDisp
 import numpy as np
@@ -44,56 +44,67 @@ nit=500
 ncut=300
 threads = 32
 
-agebins = np.arange(1.,14.,2.)
+agebins = np.arange(1.,14.,1.5)
 fehbins = np.arange(-0.6,0.6,0.1)
 
 model_type = 'ellipsoid'
+nparams = 11
 
-if os.path.isfile('../sav/DR14_TGAS_Ages_galcencyl_nodups.npy'):
-    with open('../sav/DR14_TGAS_Ages_galcencyl_nodups.npy', 'rb') as f:
+print('fitting '+model_type.lower())
+
+if os.path.isfile('../sav/DR14_Gaia_astroNNAges_dists_galcencyl.npy'):
+    with open('../sav/DR14_Gaia_astroNNAges_dists_galcencyl.npy', 'rb') as f:
         dat = np.load(f)
         Rpz = np.load(f)
         vRvTvz = np.load(f)
         cov_galcencyl = np.load(f)
 else:
-    dat = define_rgbtgassample.get_rgbtgassample(cuts = True, 
-                                                 add_dist=True, 
-                                                 add_ages=True,
-                                                 rm_bad_dist=True,
-                                                 distkey='BPG_meandist', 
-                                                 disterrkey='BPG_diststd')
-    XYZ, vxvyvz, cov_vxyz = define_rgbtgassample.dat_to_rectgal(dat, 
-                                                                return_cov=True,
-                                                                keys = ['ra', 
-                                                                        'dec', 
-                                                                        'BPG_meandist', 
-                                                                        'pmra', 
-                                                                        'pmdec', 
-                                                                        'VHELIO_AVG'],
-                                                                cov_keys =['pmra_error',
-                                                                           'pmdec_error',
-                                                                           'pmra_pmdec_corr',
-                                                                           'BPG_diststd',
-                                                                           'VERR'])
-    ro, vo, zo = 8., 220., 0.025
-    vsolar= np.array([-10.1,4.0,6.7])
-    vsun= np.array([0.,1.,0.,])+vsolar/vo
-    Rpz = bovy_coords.XYZ_to_galcencyl(XYZ[:,0],XYZ[:,1],XYZ[:,2],Zsun=0.025/8.)
-    vRvTvz = bovy_coords.vxvyvz_to_galcencyl(vxvyvz[:,0], vxvyvz[:,1], vxvyvz[:,2], Rpz[:,0], Rpz[:,1], Rpz[:,2],
-                                             vsun=vsun,
-                                             Xsun=1.,
-                                             Zsun=zo/ro,
-                                             galcen=True)
-    cov_galcencyl = cov_vxyz_to_galcencyl(cov_vxyz, Rpz[:,1], Xsun=1., Zsun=0.025/8.)
-    with open('../sav/DR14_TGAS_correctedAges_galcencyl_nodups.npy', 'wb') as f:
+    dat = define_rgbsample.get_rgbsample(cuts = True, 
+                                         add_dist=True, 
+                                         astronn_dist = True,
+                                         add_ages=True,
+                                         rm_bad_dist=True,
+                                         alternate_ages=True,
+                                         distkey='pc',
+                                         rmdups=True)
+    dat['pc'] *= 1e-3
+    dat['pc_error'] *= 1e-3
+    XYZ, vxyz, cov_vxyz, Rpz, vRvTvz, cov_galcencyl = define_rgbsample.dat_to_galcen(dat, 
+                                                                                      return_cov=True,
+                                                                                      return_rphiz =True,
+                                                                                      verbose =True,
+                                                                                      ro = 8.,
+                                                                                      vo = 220.,
+                                                                                      zo = 0.025,
+                                                                                      keys = ['ra', 
+                                                                                              'dec', 
+                                                                                              'pc', 
+                                                                                              'pmra', 
+                                                                                              'pmdec', 
+                                                                                              'VHELIO_AVG'],
+                                                                                      cov_keys =['pmra_error',
+                                                                                                 'pmdec_error',
+                                                                                                 'pmra_pmdec_corr',
+                                                                                                 'pc_error',
+                                                                                                 'VERR'],
+                                                                                      parallax = False)
+    
+    with open('../sav/DR14_Gaia_astroNNAges_dists_galcencyl.npy', 'wb') as f:
         np.save(f, dat)
         np.save(f, Rpz)
         np.save(f, vRvTvz)
         np.save(f, cov_galcencyl)
         
-lo_samples = np.empty([len(agebins)-1,len(fehbins)-1,nwalk*nit-ncut*nwalk,11])
-hi_samples = np.empty([len(agebins)-1,len(fehbins)-1,nwalk*nit-ncut*nwalk,11])
-co_samples = np.empty([len(agebins)-1,len(fehbins)-1,nwalk*nit-ncut*nwalk,11])
+mask = np.all(np.isfinite(vRvTvz), axis=1)
+
+dat = dat[mask]
+vRvTvz = vRvTvz[mask]
+Rpz = Rpz[mask]
+cov_galcencyl = cov_galcencyl[mask]
+        
+lo_samples = np.empty([len(agebins)-1,len(fehbins)-1,nwalk*nit-ncut*nwalk,nparams])
+hi_samples = np.empty([len(agebins)-1,len(fehbins)-1,nwalk*nit-ncut*nwalk,nparams])
+co_samples = np.empty([len(agebins)-1,len(fehbins)-1,nwalk*nit-ncut*nwalk,nparams])
 lo_med_z = np.empty([len(agebins)-1,len(fehbins)-1,5])
 hi_med_z = np.empty([len(agebins)-1,len(fehbins)-1,5])
 co_med_z = np.empty([len(agebins)-1,len(fehbins)-1,5])
@@ -103,26 +114,27 @@ sample_arrs = [lo_samples, hi_samples, co_samples]
 
 for i in range(len(agebins)-1):
     for j in range(len(fehbins)-1):
-        
         lo_mask = [(dat['Age'] > agebins[i]) & \
                    (dat['Age'] < agebins[i+1]) & \
                    (dat['FE_H'] > fehbins[j]) & \
                    (dat['FE_H'] < fehbins[j+1]) & \
-                   (dat['AVG_ALPHAFE'] < define_rgbtgassample.alphaedge(dat['FE_H']))]
+                   (dat['AVG_ALPHAFE'] < define_rgbsample.alphaedge(dat['FE_H']))]
         hi_mask = [(dat['Age'] > agebins[i]) & \
                    (dat['Age'] < agebins[i+1]) & \
                    (dat['FE_H'] > fehbins[j]) & \
                    (dat['FE_H'] < fehbins[j+1]) & \
-                   (dat['AVG_ALPHAFE'] > define_rgbtgassample.alphaedge(dat['FE_H']))]
+                   (dat['AVG_ALPHAFE'] > define_rgbsample.alphaedge(dat['FE_H'])+0.04)]
         co_mask = [(dat['Age'] > agebins[i]) & \
                    (dat['Age'] < agebins[i+1]) & \
                    (dat['FE_H'] > fehbins[j]) & \
                    (dat['FE_H'] < fehbins[j+1])]
+        print('%i stars' % len(dat[co_mask]))
         masks = [lo_mask, hi_mask, co_mask]
         labs = ['low [a/Fe]', 'high [a/Fe]', 'all [a/Fe]']
         for ii,m in enumerate(masks):
-            if len(vRvTvz[:,0][m]) < 100:
-                sample_arrs[ii][i,j] = np.ones([nwalk*nit-ncut*nwalk,11])*np.nan
+            if len(vRvTvz[:,0][m]) < 80:
+                sample_arrs[ii][i,j] = np.ones([nwalk*nit-ncut*nwalk,nparams])*np.nan
+                med_z_arrs[ii][i,j] = np.ones(5)*np.nan
                 continue
             v_R = vRvTvz[:,0][m]*220.
             v_z = vRvTvz[:,2][m]*220.
@@ -131,17 +143,20 @@ for i in range(len(agebins)-1):
             cov_vRvTvz = cov_galcencyl[m]
             med_z = np.nanmedian(np.fabs(z))
             med_z_arrs[ii][i,j] = np.nanpercentile(np.fabs(z), [10,25,50,75,90])
-            init = [1/8.,np.log10(30.),0.,0.,1/2.5,np.log10(20.),0.,0.,0.,0.,0.01]
+            #init = [1/8.,np.log10(30.),0.,0.,1/2.5,np.log10(20.),0.,0.,0.,0.,0.01]
+            #init = [1/8.,np.log10(30.),1.,1.,1/2.5,np.log10(20.),1.,1.,0.,0.,0.,0.,0.01]
+            init = [1/8.,np.log10(30.),1.,1.,1/2.5,np.log10(20.),1.,1.,0.,0.,1/10.,0.,1/10.,0.,0.01]
             sys.stdout.write(str(agebins[i])+' < Age < '+str(agebins[i+1])+' '+str(round(fehbins[j],2))+' < [Fe/H] < '+str(round(fehbins[j+1],2))+' \n')
             sys.stdout.write(labs[ii]+' \n')
             sys.stdout.write(str(len(vRvTvz[:,0][m]))+' \n')
             out = fitDisp.fitDisp(R, z, v_R, v_z, cov_vRvTvz, med_z, model_type, init,
                                   mcmc=True, threads=threads, ncut=ncut, nit=nit, nwalk=nwalk)
             sys.stdout.flush()
+            sys.stdout.write(str(np.median(out[1],axis=0))+' \n')
             sample_arrs[ii][i,j] = out[1]
 
             
-with open('../sav/samples_monoage_ellipsoid_nodups.npy', 'wb') as f:
+with open('../sav/apdr14gaiadr2_astroNN_ages_distances_ellipsoid_fixedv0_monoage_samples.npy', 'wb') as f:
     np.save(f, lo_samples)
     np.save(f, hi_samples)
     np.save(f, co_samples)
