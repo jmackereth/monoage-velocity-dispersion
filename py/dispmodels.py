@@ -297,6 +297,70 @@ def ellipsoid_v0_R(v_R, v_z, R, z,
     out = np.sum(logsums)
     return out 
 
+
+agebins = np.arange(1.,14.,1.5)
+fehbins = np.arange(-0.6,0.6,0.1)
+
+tparams = []
+tparams.extend([1/8.,])
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*np.log10(50.))
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*1)
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*1)
+tparams.extend([1/8.,])
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*np.log10(50.))
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*1)
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*1)
+tparams.extend(np.ones((len(agebins)*len(fehbins)))*0.001)
+
+def ellipsoid_fitall(v_R, v_z, R, z, 
+                         cov_vRvTvz, med_z, age, feh, agebins, fehbins,
+                         params=tparams):
+    vo = 0.
+    sigmacont = 100.
+    h_sigmaR = 1/params[0]
+    sigma_R_fage = np.array(params[1:(len(agebins)*len(fehbins))+1]).reshape(len(agebins), len(fehbins))
+    a_R_fage = np.array(params[(len(agebins)*len(fehbins))+1:2*(len(agebins)*len(fehbins))+1]).reshape(len(agebins), len(fehbins))
+    b_R_fage = np.array(params[2*(len(agebins)*len(fehbins))+1:3*(len(agebins)*len(fehbins))+1]).reshape(len(agebins), len(fehbins))
+    h_sigmaZ = 1/params[3*(len(agebins)*len(fehbins))+1]
+    sigma_z_fage = np.array(params[3*(len(agebins)*len(fehbins))+2:4*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+    a_z_fage = np.array(params[4*(len(agebins)*len(fehbins))+2:5*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+    b_z_fage = np.array(params[5*(len(agebins)*len(fehbins))+2:6*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+    contfrac_fage = np.array(params[6*(len(agebins)*len(fehbins))+2:7*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+    i_s = np.digitize(age, agebins)
+    j_s = np.digitize(feh, fehbins)
+    v_R0, v_z0 = 0., 0.
+    sigma_R_fage, sigma_R_fage = 10**sigma_R_fage, 10**sigma_z_fage
+    z = np.fabs(z)
+    sigma_fRz_R = (a_R_fage[i_s,j_s]*(z-med_z[i_s,j_s])**2+b_R_fage[i_s,j_s]*(z-med_z[i_s,j_s])+sigma_R_fage[i_s,j_s])*(np.exp(-1*(R-_R0)/h_sigmaR))
+    sigma_fRz_z = (a_z_fage[i_s,j_s]*(z-med_z[i_s,j_s])**2+b_z_fage[i_s,j_s]*(z-med_z[i_s,j_s])+sigma_z_fage[i_s,j_s])*(np.exp(-1*(R-_R0)/h_sigmaz))
+    tana= z/R #+params[11]*(z/R)**2.
+    sig2rz= (sigma_fRz_R**2.-sigma_fRz_z**2.)*tana/(1.-tana**2.)
+    vvs = np.zeros((len(v_R), 2))
+    vvs[:,0] = v_R-v_R0
+    vvs[:,1] = v_z-v_z0
+    VVs = np.zeros((len(v_R),2,2))
+    VVs[:,0,0] = sigma_fRz_R**2.+cov_vRvTvz[:,0,0]
+    VVs[:,0,1] = sig2rz+cov_vRvTvz[:,0,2]
+    VVs[:,1,0] = sig2rz+cov_vRvTvz[:,0,2]
+    VVs[:,1,1] = sigma_fRz_z**2.+cov_vRvTvz[:,2,2]
+    outVVs = np.zeros((len(v_R),2,2))
+    outVVs[:,0,0] = sigmacont**2.+cov_vRvTvz[:,0,0]
+    outVVs[:,0,1] = cov_vRvTvz[:,0,2]
+    outVVs[:,1,0] = cov_vRvTvz[:,0,2]
+    outVVs[:,1,1] = sigmacont**2.+cov_vRvTvz[:,2,2]
+    detVVs = np.linalg.det(VVs)
+    if (detVVs < 0.).any():
+        return -np.finfo(np.dtype(np.float64)).max
+    detoutVVs = np.linalg.det(outVVs)
+    vvVVvv = np.einsum('ij,ij->i', vvs, np.einsum('aij,aj->ai', np.linalg.inv(VVs), vvs))
+    vvoutVVvv = np.einsum('ij,ij->i', vvs, np.einsum('aij,aj->ai', np.linalg.inv(outVVs), vvs))
+    #Do likelihood
+    out= 0.
+    Bs = np.dstack([contfrac/np.sqrt(detoutVVs), (1.-contfrac)/np.sqrt(detVVs)])[0]
+    As = np.dstack([-0.5*vvoutVVvv, -0.5*vvVVvv])[0]
+    logsums = logsumexp(As, b=Bs, axis=1)
+    out = np.sum(logsums)
+
 def quasiisothermal(samples, params=[1./0.3,0.2,0.1,1./1.,1./1.]):
     qdf= quasiisothermaldf(1./3.,params[1],params[2],1./params[3],1./params[4],
                            pot=MWPotential2014,aA=aAS,cutcounter=True)

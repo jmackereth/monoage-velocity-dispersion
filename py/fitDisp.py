@@ -71,6 +71,36 @@ def fitDisp_qdf(vxvvsample, init,
         return out, samples
     return out
 
+def fitDisp_all(R, z, v_R, v_z, cov_vRvTvz, med_z, age, feh, agebins, fehbins, mtype, init,
+            mcmc=False,
+            nofit=True,
+            nit=300, 
+            nwalk=200, 
+            ncut=50, 
+            threads=16,
+            debug=False):
+    dispmodel = setup_dispmodel(mtype)
+    if not nofit:
+        sys.stdout.write('inital parameters: '+str(init)+' \n')
+        out = fmin(lambda x: mloglike(x, R, z, v_R, v_z, cov_vRvTvz, med_z, dispmodel, mtype, emcee=False), init, disp=True)
+        sys.stdout.write('maximum likelihood params: '+str(out)+' \n')
+        sys.stdout.flush()
+    if mcmc:
+        if nofit:
+            out = init
+        ndim = len(out)
+        pos = np.fabs([out+1e-4*np.random.randn(ndim) for i in range(nwalk)])
+        sampler = emcee.EnsembleSampler(nwalk, ndim, loglike_all, 
+                                    args=(R, z, v_R, v_z, cov_vRvTvz, med_z, age, feh, agebins, fehbins, dispmodel, mtype), 
+                                    threads=threads)
+        for i, result in tqdm(enumerate(sampler.sample(pos, iterations=nit)), total=nit):
+            continue
+        sampler.pool.terminate()
+        sampler.pool.join()
+        samples = sampler.chain[:,ncut:,:].reshape((-1,ndim))
+        return out, samples
+    return out
+
 def loglike(params, dataR, dataZ, datav_R, datav_z, datacov_vRvTvz, datamed_z, dispmodel, mtype, emcee=True):
     if not check_prior(params, mtype, datamed_z):
         if emcee:
@@ -96,6 +126,21 @@ def loglike_qdf(params, vxvvsample, dispmodel, mtype, emcee=True):
             return -np.inf
         return -np.finfo(np.dtype(np.float64)).max
     return lp
+
+def loglike_all(params, dataR, dataZ, datav_R, datav_z, datacov_vRvTvz, datamed_z, dataage, datafeh, agebins,fehbins, dispmodel, mtype, emcee=True):
+    if not check_prior(params, mtype, None):
+        if emcee:
+            return -np.inf
+        return -np.finfo(np.dtype(np.float64)).max
+    mod = lambda v_R, v_z, R, z, cov_vRvTvz, datamed_z, age, feh: dispmodel(v_R, v_z, R, z, cov_vRvTvz, datamed_z, age, feh, agebins, fehbins, params=params)
+    lp = mod(datav_R, datav_z, dataR, dataZ, datacov_vRvTvz, datamed_z, dataage, datafeh)
+    if not np.isfinite(lp):
+        if emcee:
+            return -np.inf
+        return -np.finfo(np.dtype(np.float64)).max
+    return lp
+
+
 
 def mloglike(*args,**kwargs):
     return -loglike(*args,**kwargs)
@@ -124,6 +169,8 @@ def setup_dispmodel(model):
         return dispmodels.ellipsoid_v0_R
     elif model.lower() == 'qdf':
         return dispmodels.quasiisothermal
+    elif model.lower() == 'ellipsoid_all':
+        return dispmodels.ellipsoid_fitall
     else:
         raise NameError('Bad model type string!')
     
@@ -242,6 +289,21 @@ def check_prior(params, model, med_z):
         if params[13] < -100: return False
         if params[14] > 1.:return False
         if params[14] < 0.:return False
+        return True
+    if model.lower() == 'ellipsoid_fitall':
+        h_sigmaR = 1/params[0]
+        sigma_R_fage = np.array(params[1:(len(agebins)*len(fehbins))+1]).reshape(len(agebins), len(fehbins))
+        a_R_fage = np.array(params[(len(agebins)*len(fehbins))+1:2*(len(agebins)*len(fehbins))+1]).reshape(len(agebins), len(fehbins))
+        b_R_fage = np.array(params[2*(len(agebins)*len(fehbins))+1:3*(len(agebins)*len(fehbins))+1]).reshape(len(agebins), len(fehbins))
+        h_sigmaZ = 1/params[3*(len(agebins)*len(fehbins))+1]
+        sigma_z_fage = np.array(params[3*(len(agebins)*len(fehbins))+2:4*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+        a_z_fage = np.array(params[4*(len(agebins)*len(fehbins))+2:5*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+        b_z_fage = np.array(params[5*(len(agebins)*len(fehbins))+2:6*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+        contfrac_fage = np.array(params[6*(len(agebins)*len(fehbins))+2:7*(len(agebins)*len(fehbins))+2]).reshape(len(agebins), len(fehbins))
+        if (sigma_R_fage > 200.).any(): return False
+        if (sigma_z_fage > 200.).any(): return False
+        if (sigma_R_fage < 1.).any(): return False
+        if (sigma_z_fage < 1.).any(): return False
         return True
     if model.lower() == 'qdf':
         if params[0] < 0.: return False
