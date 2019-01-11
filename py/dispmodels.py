@@ -209,7 +209,7 @@ def ellipsoid(v_R, v_z, R, z,
     vvoutVVvv = np.einsum('ij,ij->i', vvs, np.einsum('aij,aj->ai', np.linalg.inv(outVVs), vvs))
     #Do likelihood
     out= 0.
-    Bs = np.dstack([contfrac/np.sqrt(detoutVVs), (1.-contfrac)/np.sqrt(detVVs)])[0]
+    Bs = np.dstack([contfrac/(2*np.pi*np.sqrt(detoutVVs)), (1.-contfrac)/(2*np.pi*np.sqrt(detVVs))])[0]
     As = np.dstack([-0.5*vvoutVVvv, -0.5*vvVVvv])[0]
     logsums = logsumexp(As, b=Bs, axis=1)
     out = np.sum(logsums)
@@ -249,7 +249,7 @@ def ellipsoid_varying_v0(v_R, v_z, R, z,
     vvoutVVvv = np.einsum('ij,ij->i', vvs, np.einsum('aij,aj->ai', np.linalg.inv(outVVs), vvs))
     #Do likelihood
     out= 0.
-    Bs = np.dstack([contfrac/np.sqrt(detoutVVs), (1.-contfrac)/np.sqrt(detVVs)])[0]
+    Bs = np.dstack([contfrac/(2*np.pi*np.sqrt(detoutVVs)), (1.-contfrac)/(2*np.pi*np.sqrt(detVVs))])[0]
     As = np.dstack([-0.5*vvoutVVvv, -0.5*vvVVvv])[0]
     logsums = logsumexp(As, b=Bs, axis=1)
     out = np.sum(logsums)
