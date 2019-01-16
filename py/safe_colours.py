@@ -1,3 +1,6 @@
+
+## Code originally written by Jonathan Davies (LJMU) 
+
 import pylab as plt
 import numpy as N
 import matplotlib
